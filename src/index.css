@@ -1,0 +1,131 @@
+@import "@fontsource/fraunces/400.css";
+@import "@fontsource/fraunces/500.css";
+@import "@fontsource/fraunces/600.css";
+@import "@fontsource/fraunces/700.css";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Light · Warm Ivory Paper */
+  --ink: 42 37 32;
+  --ink-soft: 86 78 68;
+  --ink-faint: 142 132 118;
+  --paper: 245 241 232;
+  --paper-soft: 238 232 218;
+  --paper-card: 252 249 242;
+  --scholar: 27 45 42;
+  --scholar-deep: 18 30 28;
+  --gold: 168 142 70;
+  --gold-soft: 201 169 97;
+  --rust: 200 85 61;
+  --rust-soft: 220 130 110;
+  --line: 210 199 175;
+
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  line-height: 1.6;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html.dark {
+  /* Dark · Ink Green Scholar */
+  --ink: 232 226 214;
+  --ink-soft: 178 170 156;
+  --ink-faint: 122 116 104;
+  --paper: 27 38 36;
+  --paper-soft: 33 46 43;
+  --paper-card: 36 51 47;
+  --scholar: 245 241 232;
+  --scholar-deep: 201 169 97;
+  --gold: 201 169 97;
+  --gold-soft: 168 142 70;
+  --rust: 220 110 88;
+  --rust-soft: 200 85 61;
+  --line: 58 74 70;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: rgb(var(--paper));
+  color: rgb(var(--ink));
+  transition: background-color 0.4s ease, color 0.4s ease;
+}
+
+/* Paper grain texture overlay */
+.paper-grain {
+  position: relative;
+}
+.paper-grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.paper-grain > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--line) / 0.6);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--gold) / 0.7);
+}
+
+/* Selection */
+::selection {
+  background-color: rgb(var(--gold) / 0.35);
+  color: rgb(var(--ink));
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid rgb(var(--gold) / 0.7);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Utility: hide number input arrows */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Display font helper */
+.font-display {
+  font-family: "Fraunces", Georgia, serif;
+  font-optical-sizing: auto;
+}
