@@ -144,6 +144,17 @@ export default function Settings() {
               </button>
             </div>
           </Row>
+          <div className="px-3 py-1.5 text-xs text-ink-faint">
+            还没有 Key？
+            <a
+              href="https://platform.agnes-ai.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gold transition hover:underline"
+            >
+              前往 Agnes 平台获取 →
+            </a>
+          </div>
           {testResult === 'ok' && (
             <div className="flex items-center gap-1.5 px-3 py-2 text-xs text-gold">
               <Check size={12} /> 连接正常，可使用总结与纠错
