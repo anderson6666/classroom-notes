@@ -1,0 +1,117 @@
+name: Split Models into Chunks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/split-models.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p workdir
+          gh release download models-large \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir workdir \
+            --pattern '*.tar.gz'
+          ls -lh workdir
+
+      - name: Split into chunks and build manifest
+        run: |
+          set -euo pipefail
+          CHUNK_SIZE=90000000  # ~90MB, safely under GitHub's 100MB file limit
+          mkdir -p chunks/zh-CN chunks/en-US
+
+          # Helper: split a tar.gz into zero-padded chunks and emit JSON array entries
+          split_model() {
+            local src="$1"   # source tar.gz path
+            local lang="$2"  # zh-CN | en-US
+
+            if [ ! -f "$src" ]; then
+              echo "WARN: $src not found, skipping $lang"
+              return 0
+            fi
+
+            local total_size
+            total_size=$(stat -c %s "$src")
+            echo "Splitting $src ($total_size bytes) into $lang chunks..."
+
+            (
+              cd "chunks/$lang"
+              split -b "$CHUNK_SIZE" -d --numeric-suffixes=1 "../../$src" chunk_
+              # Zero-pad suffix to 3 digits: chunk_1 -> chunk_001
+              for f in chunk_*; do
+                n=$(echo "$f" | sed 's/chunk_//')
+                mv "$f" "$(printf 'chunk_%03d' "$n")"
+              done
+            )
+
+            # Build JSON array of chunk paths
+            local chunk_array
+            chunk_array=$(
+              ls "chunks/$lang" | sort | while read -r name; do
+                printf '"%s/%s"' "$lang" "$name"
+              done | paste -sd, -
+            )
+
+            printf '  "%s": {\n    "totalSize": %s,\n    "chunks": [%s]\n  }' \
+              "$lang" "$total_size" "$chunk_array" > "manifest_$lang.part"
+          }
+
+          split_model "workdir/vosk-model-cn-0.22.tar.gz" "zh-CN"
+          split_model "workdir/vosk-model-en-us-0.22.tar.gz" "en-US"
+
+          # Assemble final manifest
+          {
+            echo "{"
+            if [ -f manifest_zh-CN.part ]; then
+              cat manifest_zh-CN.part
+              echo ","
+            fi
+            if [ -f manifest_en-US.part ]; then
+              cat manifest_en-US.part
+            fi
+            echo ""
+            echo "}"
+          } | python3 -m json.tool > chunks/manifest.json
+
+          echo "=== Manifest ==="
+          cat chunks/manifest.json
+          echo ""
+          echo "=== Chunk count ==="
+          find chunks -name 'chunk_*' | wc -l
+          echo "=== Total chunk size ==="
+          du -sh chunks
+
+      - name: Push to model-assets branch
+        run: |
+          set -euo pipefail
+          cd chunks
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan model-assets
+          git add -A
+          CHUNK_COUNT=$(find . -name 'chunk_*' | wc -l)
+          TOTAL_SIZE=$(du -sh . | cut -f1)
+          git commit -m "chore: split models into chunks for CORS-friendly serving
+
+          Source: release 'models-large'
+          Chunks: ${CHUNK_COUNT} files
+          Total size: ${TOTAL_SIZE}"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -f origin model-assets
+          echo "=== Pushed model-assets branch ==="

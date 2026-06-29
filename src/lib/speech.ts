@@ -89,12 +89,19 @@ interface VoskModule {
   createModel: (modelUrl: string, logLevel?: number) => Promise<VoskModel>;
 }
 
-const RELEASE_BASE = 'https://github.com/anderson6666/classroom-notes/releases/download/models-large';
+// Models are split into <100MB chunks on a separate orphan branch.
+// raw.githubusercontent.com serves them with `Access-Control-Allow-Origin: *`,
+// bypassing the CORS issue that blocks GitHub Release download URLs.
+const MODEL_BASE =
+  'https://raw.githubusercontent.com/anderson6666/classroom-notes/model-assets';
+const MANIFEST_URL = `${MODEL_BASE}/manifest.json`;
+const CACHE_VERSION = 1;
 
-const MODEL_URLS: Record<string, string> = {
-  'zh-CN': `${RELEASE_BASE}/vosk-model-cn-0.22.tar.gz`,
-  'en-US': `${RELEASE_BASE}/vosk-model-en-us-0.22.tar.gz`,
-};
+interface ModelManifestEntry {
+  totalSize: number;
+  chunks: string[];
+}
+type ModelManifest = Record<string, ModelManifestEntry>;
 
 // ===== Controller Interface =====
 
@@ -298,44 +305,72 @@ function createVoskController(initial: SpeechConfig): SpeechController {
     if (!voskModule) {
       voskModule = await import('vosk-browser');
     }
-    const url = MODEL_URLS[lang] || MODEL_URLS['zh-CN'];
 
+    const cacheKey = `${MANIFEST_URL}#${lang}#v${CACHE_VERSION}`;
     let blobUrl: string;
     try {
       const cache = await caches.open('vosk-models');
-      const cached = await cache.match(url);
+      const cached = await cache.match(cacheKey);
       if (cached) {
         const blob = await cached.blob();
         blobUrl = URL.createObjectURL(blob);
       } else {
         fetchAbort = new AbortController();
-        const response = await fetch(url, { signal: fetchAbort.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const contentLength = response.headers.get('Content-Length');
-        const total = contentLength ? parseInt(contentLength) : 0;
-        const reader = response.body!.getReader();
-        const chunks: Uint8Array[] = [];
-        let received = 0;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (loadingAborted) {
-            fetchAbort.abort();
-            throw new DOMException('Aborted', 'AbortError');
-          }
-          chunks.push(value);
-          received += value.length;
-          if (total > 0) {
-            emitProgress(Math.min(99, Math.round((received / total) * 100)));
-          }
+
+        // Fetch manifest describing chunk layout for this language.
+        const manifestResp = await fetch(MANIFEST_URL, {
+          signal: fetchAbort.signal,
+        });
+        if (!manifestResp.ok) {
+          throw new Error(`Manifest HTTP ${manifestResp.status}`);
         }
-        const blob = new Blob(chunks as BlobPart[]);
-        await cache.put(url, new Response(blob));
+        const manifest: ModelManifest = await manifestResp.json();
+        const entry = manifest[lang] || manifest['zh-CN'];
+        if (!entry || !entry.chunks.length) {
+          throw new Error(`No model entry for ${lang}`);
+        }
+
+        const total = entry.totalSize;
+        const chunks = entry.chunks;
+        const results = new Array<Uint8Array>(chunks.length);
+        let received = 0;
+        let nextIndex = 0;
+        const CONCURRENCY = Math.min(6, chunks.length);
+
+        const fetchChunk = async (): Promise<void> => {
+          while (nextIndex < chunks.length) {
+            if (loadingAborted) {
+              fetchAbort.abort();
+              throw new DOMException('Aborted', 'AbortError');
+            }
+            const idx = nextIndex++;
+            const chunkUrl = `${MODEL_BASE}/${chunks[idx]}`;
+            const resp = await fetch(chunkUrl, { signal: fetchAbort.signal });
+            if (!resp.ok) {
+              throw new Error(`Chunk ${idx} HTTP ${resp.status}`);
+            }
+            const buf = new Uint8Array(await resp.arrayBuffer());
+            results[idx] = buf;
+            received += buf.length;
+            if (total > 0) {
+              emitProgress(
+                Math.min(99, Math.round((received / total) * 100)),
+              );
+            }
+          }
+        };
+
+        await Promise.all(
+          Array.from({ length: CONCURRENCY }, () => fetchChunk()),
+        );
+
+        const blob = new Blob(results as BlobPart[]);
+        await cache.put(cacheKey, new Response(blob));
         blobUrl = URL.createObjectURL(blob);
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') throw e;
-      blobUrl = url;
+      throw e;
     }
     fetchAbort = null;
 
