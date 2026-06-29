@@ -27,7 +27,7 @@ export default function ModelLoadingOverlay() {
               {indeterminate ? '正在准备…' : '下载识别模型'}
             </h3>
             <p className="text-xs text-ink-faint">
-              {indeterminate ? '初始化中，请稍候' : '首次加载需要下载，之后自动缓存'}
+              {indeterminate ? '初始化中，请稍候' : '大模型约 1.3–1.8GB，首次下载较慢，之后自动缓存'}
             </p>
           </div>
           <button

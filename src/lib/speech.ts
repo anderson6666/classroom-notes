@@ -4,15 +4,71 @@ import type {
   SpeechSegment,
 } from './types';
 
-function localModelUrl(filename: string): string {
-  const base = new URL(import.meta.env.BASE_URL, window.location.href).href;
-  return `${base}models/${filename}`;
+// ===== Engine Detection =====
+
+export type SpeechEngine = 'vosk';
+
+export function detectEngine(): SpeechEngine {
+  return 'vosk';
 }
 
-const MODEL_URLS: Record<string, string> = {
-  'zh-CN': localModelUrl('vosk-model-small-cn-0.22.tar.gz'),
-  'en-US': 'https://raw.githubusercontent.com/ccoreilly/vosk-browser/gh-pages/models/vosk-model-small-en-us-0.15.tar.gz',
-};
+export function isSupported(): boolean {
+  if (typeof window === 'undefined') return false;
+  return typeof WebAssembly !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+}
+
+// ===== Web Speech API Types =====
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionResult {
+  readonly length: number;
+  item(index: number): SpeechRecognitionAlternative;
+  [index: number]: SpeechRecognitionAlternative;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionResultList {
+  readonly length: number;
+  item(index: number): SpeechRecognitionResult;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionEvent extends Event {
+  readonly resultIndex: number;
+  readonly results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  readonly error: string;
+  readonly message: string;
+}
+
+interface SpeechRecognitionLike extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+
+function createRecognition(): SpeechRecognitionLike {
+  const Ctor =
+    (window as unknown as { SpeechRecognition?: { new (): SpeechRecognitionLike } }).SpeechRecognition ||
+    (window as unknown as { webkitSpeechRecognition?: { new (): SpeechRecognitionLike } }).webkitSpeechRecognition;
+  return new Ctor!();
+}
+
+// ===== Vosk Types =====
 
 interface VoskModel {
   KaldiRecognizer: new (sampleRate: number, grammar?: string) => VoskRecognizer;
@@ -33,17 +89,14 @@ interface VoskModule {
   createModel: (modelUrl: string, logLevel?: number) => Promise<VoskModel>;
 }
 
-let cachedModel: VoskModel | null = null;
-let cachedModelLang = '';
-let voskModule: VoskModule | null = null;
+const RELEASE_BASE = 'https://github.com/anderson6666/classroom-notes/releases/download/models-large';
 
-export function isSupported(): boolean {
-  if (typeof window === 'undefined') return false;
-  return (
-    typeof WebAssembly !== 'undefined' &&
-    !!navigator.mediaDevices?.getUserMedia
-  );
-}
+const MODEL_URLS: Record<string, string> = {
+  'zh-CN': `${RELEASE_BASE}/vosk-model-cn-0.22.tar.gz`,
+  'en-US': `${RELEASE_BASE}/vosk-model-en-us-0.22.tar.gz`,
+};
+
+// ===== Controller Interface =====
 
 export interface SpeechController {
   start: () => void;
@@ -70,7 +123,149 @@ function nextId(): string {
   return `seg_${Date.now().toString(36)}_${idCounter}`;
 }
 
-export function createSpeechController(initial: SpeechConfig): SpeechController {
+// ===== Web Speech API Controller =====
+
+function createWebSpeechController(initial: SpeechConfig): SpeechController {
+  let config: SpeechConfig = { ...initial };
+  let userIntent: RecognitionState = 'idle';
+  let recognition: SpeechRecognitionLike | null = null;
+  let startTimestamp = 0;
+  let restartTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const segmentCb = new Set<(seg: SpeechSegment) => void>();
+  const stateCb = new Set<(s: RecognitionState) => void>();
+  const errorCb = new Set<(e: SpeechError) => void>();
+
+  const emitState = (s: RecognitionState) => stateCb.forEach((cb) => cb(s));
+  const emitError = (e: SpeechError) => errorCb.forEach((cb) => cb(e));
+  const emitSegment = (seg: SpeechSegment) => segmentCb.forEach((cb) => cb(seg));
+
+  function setupRecognition(): SpeechRecognitionLike {
+    const rec = createRecognition();
+    rec.lang = config.lang;
+    rec.continuous = config.continuous;
+    rec.interimResults = config.interimResults;
+    rec.maxAlternatives = config.maxAlternatives;
+
+    rec.onstart = () => {
+      startTimestamp = Date.now();
+    };
+
+    rec.onresult = (event: SpeechRecognitionEvent) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const alt = result.item(0) || result[0];
+        if (!alt) continue;
+        const text = alt.transcript;
+        if (!text) continue;
+        emitSegment({
+          id: nextId(),
+          text,
+          timestamp: Date.now() - startTimestamp,
+          isFinal: result.isFinal,
+          confidence: alt.confidence,
+        });
+      }
+    };
+
+    rec.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        userIntent = 'error';
+        emitError({
+          kind: 'not-allowed',
+          message: '麦克风权限被拒绝，请在浏览器设置中允许。',
+        });
+        emitState('error');
+      } else if (event.error === 'network') {
+        emitError({
+          kind: 'unknown',
+          message: '网络错误，语音识别服务不可用。',
+        });
+      }
+    };
+
+    rec.onend = () => {
+      if (userIntent === 'listening') {
+        restartTimer = setTimeout(() => {
+          if (userIntent === 'listening' && recognition) {
+            try { recognition.start(); } catch { /* already started */ }
+          }
+        }, 100);
+      } else {
+        emitState('idle');
+      }
+    };
+
+    return rec;
+  }
+
+  return {
+    start() {
+      if (userIntent === 'listening' || userIntent === 'loading') return;
+      userIntent = 'listening';
+      try {
+        recognition = setupRecognition();
+        recognition.start();
+        startTimestamp = Date.now();
+        emitState('listening');
+      } catch (e) {
+        userIntent = 'error';
+        emitError({
+          kind: 'unknown',
+          message: e instanceof Error ? `语音识别启动失败：${e.message}` : '语音识别启动失败。',
+        });
+        emitState('error');
+      }
+    },
+    stop() {
+      userIntent = 'idle';
+      if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+      if (recognition) {
+        try { recognition.stop(); } catch { /* */ }
+      }
+      emitState('idle');
+    },
+    abort() {
+      userIntent = 'idle';
+      if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+      if (recognition) {
+        try { recognition.abort(); } catch { /* */ }
+      }
+      emitState('idle');
+    },
+    updateConfig(next) {
+      const langChanged = next.lang !== undefined && next.lang !== config.lang;
+      config = { ...config, ...next };
+      if (langChanged && userIntent === 'listening') {
+        if (recognition) { try { recognition.abort(); } catch { /* */ } }
+        recognition = setupRecognition();
+        try { recognition.start(); } catch { /* */ }
+      }
+    },
+    onSegment(cb) { segmentCb.add(cb); },
+    onStateChange(cb) { stateCb.add(cb); },
+    onError(cb) { errorCb.add(cb); },
+    onProgress() { /* no-op: Web Speech API has no model download */ },
+    destroy() {
+      userIntent = 'idle';
+      if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+      if (recognition) { try { recognition.abort(); } catch { /* */ } }
+      recognition = null;
+      segmentCb.clear();
+      stateCb.clear();
+      errorCb.clear();
+    },
+  };
+}
+
+// ===== Vosk Controller =====
+
+let cachedModel: VoskModel | null = null;
+let cachedModelLang = '';
+let voskModule: VoskModule | null = null;
+
+function createVoskController(initial: SpeechConfig): SpeechController {
   let config: SpeechConfig = { ...initial };
   let userIntent: RecognitionState = 'idle';
   let startTimestamp = 0;
@@ -82,6 +277,7 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
   let processorNode: ScriptProcessorNode | null = null;
   let muteGain: GainNode | null = null;
   let loadingAborted = false;
+  let fetchAbort: AbortController | null = null;
 
   const segmentCb = new Set<(seg: SpeechSegment) => void>();
   const stateCb = new Set<(s: RecognitionState) => void>();
@@ -92,8 +288,6 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
   const emitError = (e: SpeechError) => errorCb.forEach((cb) => cb(e));
   const emitSegment = (seg: SpeechSegment) => segmentCb.forEach((cb) => cb(seg));
   const emitProgress = (p: number) => progressCb.forEach((cb) => cb(p));
-
-  let fetchAbort: AbortController | null = null;
 
   async function ensureModel(lang: string): Promise<VoskModel> {
     if (cachedModel && cachedModelLang === lang) return cachedModel;
@@ -180,11 +374,10 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
         const msg = message as { result: { text: string } };
         const text = msg.result.text;
         if (!text) return;
-        const ts = Date.now() - startTimestamp;
         emitSegment({
           id: nextId(),
           text,
-          timestamp: ts,
+          timestamp: Date.now() - startTimestamp,
           isFinal: true,
           confidence: 1,
         });
@@ -303,18 +496,10 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
         cachedModelLang = '';
       }
     },
-    onSegment(cb) {
-      segmentCb.add(cb);
-    },
-    onStateChange(cb) {
-      stateCb.add(cb);
-    },
-    onError(cb) {
-      errorCb.add(cb);
-    },
-    onProgress(cb) {
-      progressCb.add(cb);
-    },
+    onSegment(cb) { segmentCb.add(cb); },
+    onStateChange(cb) { stateCb.add(cb); },
+    onError(cb) { errorCb.add(cb); },
+    onProgress(cb) { progressCb.add(cb); },
     destroy() {
       loadingAborted = true;
       if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
@@ -331,4 +516,10 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
       }
     },
   };
+}
+
+// ===== Factory =====
+
+export function createSpeechController(initial: SpeechConfig): SpeechController {
+  return createVoskController(initial);
 }

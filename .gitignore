@@ -25,3 +25,6 @@ dist-ssr
 
 # TRAE IDE internal
 .trae/
+
+# Temp model downloads
+tmp/
