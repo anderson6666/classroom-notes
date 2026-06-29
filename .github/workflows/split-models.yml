@@ -37,7 +37,7 @@ jobs:
               tmpdir=$(mktemp -d)
               tar -xzf "$f" -C "$tmpdir"
               # Find the model directory (contains am/ or final.mdl)
-              model_dir=$(find "$tmpdir" -maxdepth 1 -type d ! -name "$tmpdir" | head -1)
+              model_dir=$(find "$tmpdir" -maxdepth 1 -type d ! -path "$tmpdir" | head -1)
               if [ -d "$model_dir/rnnlm" ]; then
                 rm -rf "$model_dir/rnnlm"
                 echo "Removed $model_dir/rnnlm"
