@@ -80,5 +80,6 @@ export interface LanguageOption {
 
 export const LANGUAGES: LanguageOption[] = [
   { value: 'zh-CN', label: '普通话' },
+  { value: 'zh-HK', label: '粤语（香港）' },
   { value: 'en-US', label: 'English' },
 ];
