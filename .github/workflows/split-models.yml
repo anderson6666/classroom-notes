@@ -35,61 +35,45 @@ jobs:
           CHUNK_SIZE=90000000  # ~90MB, safely under GitHub's 100MB file limit
           mkdir -p chunks/zh-CN chunks/en-US
 
-          # Helper: split a tar.gz into zero-padded chunks and emit JSON array entries
-          split_model() {
-            local src="$1"   # source tar.gz path
-            local lang="$2"  # zh-CN | en-US
+          # Split each tar.gz into raw chunks. `split -d` produces chunk_00,
+          # chunk_01, ... which sorts naturally and avoids octal-number issues
+          # that arise when zero-padding numeric suffixes with printf.
+          if [ -f workdir/vosk-model-cn-0.22.tar.gz ]; then
+            echo "Splitting Chinese model..."
+            split -b "$CHUNK_SIZE" -d workdir/vosk-model-cn-0.22.tar.gz chunks/zh-CN/chunk_
+          fi
 
-            if [ ! -f "$src" ]; then
-              echo "WARN: $src not found, skipping $lang"
-              return 0
-            fi
+          if [ -f workdir/vosk-model-en-us-0.22.tar.gz ]; then
+            echo "Splitting English model..."
+            split -b "$CHUNK_SIZE" -d workdir/vosk-model-en-us-0.22.tar.gz chunks/en-US/chunk_
+          fi
 
-            local total_size
-            total_size=$(stat -c %s "$src")
-            echo "Splitting $src ($total_size bytes) into $lang chunks..."
+          # Build manifest.json with Python for reliable JSON generation.
+          python3 <<'PYEOF'
+          import json, os
 
-            (
-              cd "chunks/$lang"
-              split -b "$CHUNK_SIZE" -d --numeric-suffixes=1 "../../$src" chunk_
-              # Zero-pad suffix to 3 digits: chunk_1 -> chunk_001
-              for f in chunk_*; do
-                n=$(echo "$f" | sed 's/chunk_//')
-                mv "$f" "$(printf 'chunk_%03d' "$n")"
-              done
-            )
+          manifest = {}
+          for lang in ("zh-CN", "en-US"):
+              d = f"chunks/{lang}"
+              if not os.path.isdir(d):
+                  continue
+              files = sorted(f for f in os.listdir(d) if f.startswith("chunk_"))
+              if not files:
+                  continue
+              total = sum(os.path.getsize(os.path.join(d, f)) for f in files)
+              manifest[lang] = {
+                  "totalSize": total,
+                  "chunks": [f"{lang}/{f}" for f in files],
+              }
+              print(f"{lang}: {len(files)} chunks, {total} bytes")
 
-            # Build JSON array of chunk paths
-            local chunk_array
-            chunk_array=$(
-              ls "chunks/$lang" | sort | while read -r name; do
-                printf '"%s/%s"' "$lang" "$name"
-              done | paste -sd, -
-            )
+          with open("chunks/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
 
-            printf '  "%s": {\n    "totalSize": %s,\n    "chunks": [%s]\n  }' \
-              "$lang" "$total_size" "$chunk_array" > "manifest_$lang.part"
-          }
+          print("\n=== Manifest ===")
+          print(json.dumps(manifest, indent=2))
+          PYEOF
 
-          split_model "workdir/vosk-model-cn-0.22.tar.gz" "zh-CN"
-          split_model "workdir/vosk-model-en-us-0.22.tar.gz" "en-US"
-
-          # Assemble final manifest
-          {
-            echo "{"
-            if [ -f manifest_zh-CN.part ]; then
-              cat manifest_zh-CN.part
-              echo ","
-            fi
-            if [ -f manifest_en-US.part ]; then
-              cat manifest_en-US.part
-            fi
-            echo ""
-            echo "}"
-          } | python3 -m json.tool > chunks/manifest.json
-
-          echo "=== Manifest ==="
-          cat chunks/manifest.json
           echo ""
           echo "=== Chunk count ==="
           find chunks -name 'chunk_*' | wc -l
