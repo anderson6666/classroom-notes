@@ -1,4 +1,4 @@
-name: Split Models into Chunks
+name: Split Models into Chunks (Remove RNNLM)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download release assets
+      - name: Download release assets and remove RNNLM
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -29,25 +29,54 @@ jobs:
             --pattern '*.tar.gz'
           ls -lh workdir
 
+          # Remove RNNLM directory from each model tarball
+          # This allows vosk-browser WASM to load big models without RNNLM support.
+          for f in workdir/*.tar.gz; do
+            if [ -f "$f" ]; then
+              echo "=== Removing RNNLM from $f ==="
+              tmpdir=$(mktemp -d)
+              tar -xzf "$f" -C "$tmpdir"
+              # Find the model directory (contains am/ or final.mdl)
+              model_dir=$(find "$tmpdir" -maxdepth 1 -type d ! -name "$tmpdir" | head -1)
+              if [ -d "$model_dir/rnnlm" ]; then
+                rm -rf "$model_dir/rnnlm"
+                echo "Removed $model_dir/rnnlm"
+              fi
+              # Repack without rnnlm
+              new_name=$(basename "$f" .tar.gz)-no-rnnlm.tar.gz
+              (cd "$tmpdir" && tar -czf "$new_name" "$(basename "$model_dir")")
+              mv "$tmpdir/$new_name" workdir/
+              rm -rf "$tmpdir"
+              rm "$f"
+              mv "workdir/$new_name" "$f"
+              ls -lh "$f"
+            fi
+          done
+
+          echo ""
+          echo "=== Final tarballs ==="
+          ls -lh workdir/
+
       - name: Split into chunks and build manifest
         run: |
           set -euo pipefail
-          CHUNK_SIZE=90000000  # ~90MB, safely under GitHub's 100MB file limit
+          CHUNK_SIZE=90000000  # ~90MB
           mkdir -p chunks/zh-CN chunks/en-US
 
-          # Split each tar.gz into raw chunks. `split -d` produces chunk_00,
-          # chunk_01, ... which sorts naturally and avoids octal-number issues.
-          if [ -f workdir/vosk-model-cn-0.22.tar.gz ]; then
-            echo "Splitting Chinese model..."
-            split -b "$CHUNK_SIZE" -d workdir/vosk-model-cn-0.22.tar.gz chunks/zh-CN/chunk_
-          fi
+          for f in workdir/*.tar.gz; do
+            if [ -f "$f" ]; then
+              base=$(basename "$f")
+              if [[ "$base" == *cn* ]]; then
+                lang="zh-CN"
+              else
+                lang="en-US"
+              fi
+              echo "=== Splitting $f into $lang ==="
+              split -b "$CHUNK_SIZE" -d "$f" "chunks/$lang/chunk_"
+            fi
+          done
 
-          if [ -f workdir/vosk-model-en-us-0.22.tar.gz ]; then
-            echo "Splitting English model..."
-            split -b "$CHUNK_SIZE" -d workdir/vosk-model-en-us-0.22.tar.gz chunks/en-US/chunk_
-          fi
-
-          # Build manifest.json with Python for reliable JSON generation.
+          # Build manifest.json with Python
           python3 <<'PYEOF'
           import json, os
 
@@ -64,7 +93,7 @@ jobs:
                   "totalSize": total,
                   "chunks": [f"{lang}/{f}" for f in files],
               }
-              print(f"{lang}: {len(files)} chunks, {total} bytes")
+              print(f"{lang}: {len(files)} chunks, {total} bytes (~{total//1024//1024}MB)")
 
           with open("chunks/manifest.json", "w") as f:
               json.dump(manifest, f, indent=2)
@@ -76,7 +105,7 @@ jobs:
           echo ""
           echo "=== Chunk count ==="
           find chunks -name 'chunk_*' | wc -l
-          echo "=== Total chunk size ==="
+          echo "=== Total size ==="
           du -sh chunks
 
       - name: Push to model-assets branch (batched)
@@ -86,14 +115,12 @@ jobs:
           git init
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Increase HTTP buffer and disable low-speed timeout for large pushes.
           git config http.postBuffer 524288000
           git config http.lowSpeedLimit 0
           git config http.lowSpeedTime 999999
           git checkout --orphan model-assets
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
 
-          # Retry helper: push up to 3 times with 10s backoff.
           push_retry() {
             local ref="$1"
             for attempt in 1 2 3; do
@@ -109,22 +136,22 @@ jobs:
             return 1
           }
 
-          # Batch 1: manifest only (tiny, establishes the branch).
+          # Batch 1: manifest
           git add manifest.json
-          git commit -q -m "chore: add manifest.json"
+          git commit -q -m "chore: add manifest.json (big models, RNNLM removed)"
           push_retry model-assets || exit 1
 
-          # Batch 2: zh-CN chunks (~1.3GB).
+          # Batch 2: zh-CN chunks
           if [ -d zh-CN ]; then
             git add zh-CN/
-            git commit -q -m "chore: add zh-CN model chunks"
+            git commit -q -m "chore: add zh-CN model chunks (~1.3GB, RNNLM removed)"
             push_retry model-assets || exit 1
           fi
 
-          # Batch 3: en-US chunks (~1.8GB).
+          # Batch 3: en-US chunks
           if [ -d en-US ]; then
             git add en-US/
-            git commit -q -m "chore: add en-US model chunks"
+            git commit -q -m "chore: add en-US model chunks (~1.8GB, RNNLM removed)"
             push_retry model-assets || exit 1
           fi
 
