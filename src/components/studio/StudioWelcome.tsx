@@ -7,7 +7,7 @@ const FEATURES = [
   {
     icon: Zap,
     title: '实时出字',
-    desc: '基于 vosk-browser 大模型离线转写，临时与最终文字分层呈现。',
+    desc: '基于 Web Speech API 在线识别，临时与最终文字分层呈现。',
   },
   {
     icon: ShieldCheck,

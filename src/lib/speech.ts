@@ -4,17 +4,28 @@ import type {
   SpeechSegment,
 } from './types';
 
-// ===== Engine Detection =====
+// ===== Platform Detection =====
 
-export type SpeechEngine = 'vosk';
-
-export function detectEngine(): SpeechEngine {
-  return 'vosk';
+/**
+ * Detect if the current device is mobile (phone/tablet).
+ * Mobile devices do not support Web Speech API reliably, so we block them.
+ */
+export function isMobile(): boolean {
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent.toLowerCase();
+  return /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|mobile|tablet/i.test(ua);
 }
 
+/**
+ * Check if Web Speech API is supported (desktop only).
+ */
 export function isSupported(): boolean {
   if (typeof window === 'undefined') return false;
-  return typeof WebAssembly !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+  if (isMobile()) return false; // Block mobile devices
+  const hasSpeechApi =
+    !!((window as unknown as { SpeechRecognition?: unknown }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition);
+  return hasSpeechApi && !!navigator.mediaDevices?.getUserMedia;
 }
 
 // ===== Web Speech API Types =====
@@ -67,41 +78,6 @@ function createRecognition(): SpeechRecognitionLike {
     (window as unknown as { webkitSpeechRecognition?: { new (): SpeechRecognitionLike } }).webkitSpeechRecognition;
   return new Ctor!();
 }
-
-// ===== Vosk Types =====
-
-interface VoskModel {
-  KaldiRecognizer: new (sampleRate: number, grammar?: string) => VoskRecognizer;
-  terminate: () => void;
-  ready: boolean;
-  on: (event: string, listener: (message: unknown) => void) => void;
-  setLogLevel: (level: number) => void;
-}
-
-interface VoskRecognizer {
-  on: (event: string, listener: (message: unknown) => void) => void;
-  setWords: (words: boolean) => void;
-  acceptWaveform: (buffer: AudioBuffer) => void;
-  remove: () => void;
-}
-
-interface VoskModule {
-  createModel: (modelUrl: string, logLevel?: number) => Promise<VoskModel>;
-}
-
-// Models are split into <100MB chunks on a separate orphan branch.
-// raw.githubusercontent.com serves them with `Access-Control-Allow-Origin: *`,
-// bypassing the CORS issue that blocks GitHub Release download URLs.
-const MODEL_BASE =
-  'https://raw.githubusercontent.com/anderson6666/classroom-notes/model-assets';
-const MANIFEST_URL = `${MODEL_BASE}/manifest.json`;
-const CACHE_VERSION = 1;
-
-interface ModelManifestEntry {
-  totalSize: number;
-  chunks: string[];
-}
-type ModelManifest = Record<string, ModelManifestEntry>;
 
 // ===== Controller Interface =====
 
@@ -253,7 +229,7 @@ function createWebSpeechController(initial: SpeechConfig): SpeechController {
     onSegment(cb) { segmentCb.add(cb); },
     onStateChange(cb) { stateCb.add(cb); },
     onError(cb) { errorCb.add(cb); },
-    onProgress() { /* no-op: Web Speech API has no model download */ },
+    onProgress() { /* Web Speech API has no model download */ },
     destroy() {
       userIntent = 'idle';
       if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
@@ -266,326 +242,8 @@ function createWebSpeechController(initial: SpeechConfig): SpeechController {
   };
 }
 
-// ===== Vosk Controller =====
-
-let cachedModel: VoskModel | null = null;
-let cachedModelLang = '';
-let voskModule: VoskModule | null = null;
-
-function createVoskController(initial: SpeechConfig): SpeechController {
-  let config: SpeechConfig = { ...initial };
-  let userIntent: RecognitionState = 'idle';
-  let startTimestamp = 0;
-
-  let recognizer: VoskRecognizer | null = null;
-  let audioContext: AudioContext | null = null;
-  let mediaStream: MediaStream | null = null;
-  let sourceNode: MediaStreamAudioSourceNode | null = null;
-  let processorNode: ScriptProcessorNode | null = null;
-  let muteGain: GainNode | null = null;
-  let loadingAborted = false;
-  let fetchAbort: AbortController | null = null;
-
-  const segmentCb = new Set<(seg: SpeechSegment) => void>();
-  const stateCb = new Set<(s: RecognitionState) => void>();
-  const errorCb = new Set<(e: SpeechError) => void>();
-  const progressCb = new Set<(p: number) => void>();
-
-  const emitState = (s: RecognitionState) => stateCb.forEach((cb) => cb(s));
-  const emitError = (e: SpeechError) => errorCb.forEach((cb) => cb(e));
-  const emitSegment = (seg: SpeechSegment) => segmentCb.forEach((cb) => cb(seg));
-  const emitProgress = (p: number) => progressCb.forEach((cb) => cb(p));
-
-  async function ensureModel(lang: string): Promise<VoskModel> {
-    if (cachedModel && cachedModelLang === lang) return cachedModel;
-    if (cachedModel) {
-      cachedModel.terminate();
-      cachedModel = null;
-    }
-    if (!voskModule) {
-      voskModule = await import('vosk-browser');
-    }
-
-    const cacheKey = `https://vosk-models.cache/${lang}/v${CACHE_VERSION}`;
-    let blobUrl: string;
-    try {
-      const cache = await caches.open('vosk-models');
-      const cached = await cache.match(cacheKey);
-      if (cached) {
-        const blob = await cached.blob();
-        blobUrl = URL.createObjectURL(blob);
-      } else {
-        fetchAbort = new AbortController();
-
-        // Fetch with retry: exponential backoff for transient failures
-        // (400/500/网络抖动). AbortError is never retried — it means the user
-        // explicitly stopped loading.
-        const fetchWithRetry = async (
-          url: string,
-          maxRetries = 3,
-        ): Promise<Response> => {
-          let lastError: Error | null = null;
-          for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            if (loadingAborted) {
-              throw new DOMException('Aborted', 'AbortError');
-            }
-            try {
-              const resp = await fetch(url, { signal: fetchAbort.signal });
-              if (resp.ok) return resp;
-              // 4xx (except 429 rate-limit) are permanent — don't retry.
-              if (
-                resp.status >= 400 &&
-                resp.status < 500 &&
-                resp.status !== 429
-              ) {
-                throw new Error(`HTTP ${resp.status}`);
-              }
-              lastError = new Error(`HTTP ${resp.status}`);
-            } catch (e) {
-              if (e instanceof DOMException && e.name === 'AbortError') {
-                throw e;
-              }
-              lastError = e instanceof Error ? e : new Error(String(e));
-            }
-            if (attempt < maxRetries) {
-              await new Promise((r) =>
-                setTimeout(r, 1000 * Math.pow(2, attempt)),
-              );
-            }
-          }
-          throw lastError || new Error('Fetch failed after retries');
-        };
-
-        // Fetch manifest describing chunk layout for this language.
-        const manifestResp = await fetchWithRetry(MANIFEST_URL);
-        const manifest: ModelManifest = await manifestResp.json();
-        const entry = manifest[lang] || manifest['zh-CN'];
-        if (!entry || !entry.chunks.length) {
-          throw new Error(`No model entry for ${lang}`);
-        }
-
-        const total = entry.totalSize;
-        const chunks = entry.chunks;
-        const results = new Array<Uint8Array>(chunks.length);
-        let received = 0;
-        let nextIndex = 0;
-        const CONCURRENCY = Math.min(6, chunks.length);
-
-        const fetchChunk = async (): Promise<void> => {
-          while (nextIndex < chunks.length) {
-            if (loadingAborted) {
-              fetchAbort.abort();
-              throw new DOMException('Aborted', 'AbortError');
-            }
-            const idx = nextIndex++;
-            const chunkUrl = `${MODEL_BASE}/${chunks[idx]}`;
-            const resp = await fetchWithRetry(chunkUrl);
-            const buf = new Uint8Array(await resp.arrayBuffer());
-            results[idx] = buf;
-            received += buf.length;
-            if (total > 0) {
-              emitProgress(
-                Math.min(99, Math.round((received / total) * 100)),
-              );
-            }
-          }
-        };
-
-        await Promise.all(
-          Array.from({ length: CONCURRENCY }, () => fetchChunk()),
-        );
-
-        const blob = new Blob(results as BlobPart[]);
-        await cache.put(cacheKey, new Response(blob));
-        blobUrl = URL.createObjectURL(blob);
-      }
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') throw e;
-      throw e;
-    }
-    fetchAbort = null;
-
-    emitProgress(100);
-    const model = await voskModule.createModel(blobUrl, -1);
-    cachedModel = model;
-    cachedModelLang = lang;
-    return model;
-  }
-
-  async function startInternal(): Promise<void> {
-    if (loadingAborted) return;
-    try {
-      const model = await ensureModel(config.lang);
-      if (loadingAborted) return;
-
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-      if (loadingAborted) return;
-
-      audioContext = new AudioContext();
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
-
-      recognizer = new model.KaldiRecognizer(audioContext.sampleRate);
-      recognizer.setWords(false);
-
-      recognizer.on('result', (message: unknown) => {
-        const msg = message as { result: { text: string } };
-        const text = msg.result.text;
-        if (!text) return;
-        emitSegment({
-          id: nextId(),
-          text,
-          timestamp: Date.now() - startTimestamp,
-          isFinal: true,
-          confidence: 1,
-        });
-      });
-
-      recognizer.on('partialresult', (message: unknown) => {
-        if (!config.interimResults) return;
-        const msg = message as { result: { partial: string } };
-        const partial = msg.result.partial;
-        if (!partial) return;
-        emitSegment({
-          id: nextId(),
-          text: partial,
-          timestamp: Date.now() - startTimestamp,
-          isFinal: false,
-          confidence: 0,
-        });
-      });
-
-      sourceNode = audioContext.createMediaStreamSource(mediaStream);
-      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
-      muteGain = audioContext.createGain();
-      muteGain.gain.value = 0;
-
-      processorNode.onaudioprocess = (event: AudioProcessingEvent) => {
-        if (!recognizer || userIntent !== 'listening') return;
-        try {
-          recognizer.acceptWaveform(event.inputBuffer);
-        } catch {
-          /* ignore waveform errors */
-        }
-      };
-
-      sourceNode.connect(processorNode);
-      processorNode.connect(muteGain);
-      muteGain.connect(audioContext.destination);
-
-      startTimestamp = Date.now();
-      userIntent = 'listening';
-      emitState('listening');
-    } catch (e) {
-      if (loadingAborted) return;
-      userIntent = 'error';
-      const isMicError =
-        e instanceof DOMException &&
-        (e.name === 'NotAllowedError' || e.name === 'NotFoundError');
-      emitError({
-        kind: isMicError ? 'not-allowed' : 'unknown',
-        message: isMicError
-          ? '麦克风权限被拒绝，请在浏览器设置中允许。'
-          : e instanceof Error
-            ? `语音识别启动失败：${e.message}`
-            : '语音识别启动失败。',
-      });
-      emitState('error');
-      cleanupAudio();
-    }
-  }
-
-  function cleanupAudio(): void {
-    if (processorNode) {
-      try { processorNode.disconnect(); } catch { /* */ }
-      processorNode.onaudioprocess = null;
-      processorNode = null;
-    }
-    if (muteGain) {
-      try { muteGain.disconnect(); } catch { /* */ }
-      muteGain = null;
-    }
-    if (sourceNode) {
-      try { sourceNode.disconnect(); } catch { /* */ }
-      sourceNode = null;
-    }
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((t) => t.stop());
-      mediaStream = null;
-    }
-    if (audioContext) {
-      try { void audioContext.close(); } catch { /* */ }
-      audioContext = null;
-    }
-    if (recognizer) {
-      try { recognizer.remove(); } catch { /* */ }
-      recognizer = null;
-    }
-  }
-
-  return {
-    start() {
-      if (userIntent === 'listening' || userIntent === 'loading') return;
-      userIntent = 'loading';
-      loadingAborted = false;
-      emitState('loading');
-      void startInternal();
-    },
-    stop() {
-      loadingAborted = true;
-      if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
-      userIntent = 'idle';
-      cleanupAudio();
-      emitState('idle');
-    },
-    abort() {
-      loadingAborted = true;
-      if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
-      userIntent = 'idle';
-      cleanupAudio();
-      emitState('idle');
-    },
-    updateConfig(next) {
-      const langChanged = next.lang !== undefined && next.lang !== config.lang;
-      config = { ...config, ...next };
-      if (langChanged && cachedModel) {
-        cachedModel.terminate();
-        cachedModel = null;
-        cachedModelLang = '';
-      }
-    },
-    onSegment(cb) { segmentCb.add(cb); },
-    onStateChange(cb) { stateCb.add(cb); },
-    onError(cb) { errorCb.add(cb); },
-    onProgress(cb) { progressCb.add(cb); },
-    destroy() {
-      loadingAborted = true;
-      if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
-      userIntent = 'idle';
-      cleanupAudio();
-      segmentCb.clear();
-      stateCb.clear();
-      errorCb.clear();
-      progressCb.clear();
-      if (cachedModel) {
-        cachedModel.terminate();
-        cachedModel = null;
-        cachedModelLang = '';
-      }
-    },
-  };
-}
-
 // ===== Factory =====
 
 export function createSpeechController(initial: SpeechConfig): SpeechController {
-  return createVoskController(initial);
+  return createWebSpeechController(initial);
 }

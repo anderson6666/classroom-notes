@@ -82,11 +82,9 @@ export default function ControlBar() {
       </div>
       <p className="mt-1.5 text-center font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">
         {isListening
-          ? '正在聆听 · 离线识别'
+          ? '正在聆听 · 在线识别'
           : isLoading
-            ? progress > 0
-              ? `下载大模型 ${progress}%`
-              : '加载识别模型中…'
+            ? '加载中…'
             : '按下金色按钮开始'}
       </p>
     </div>

@@ -4,10 +4,17 @@ import Studio from '@/pages/Studio';
 import Library from '@/pages/Library';
 import Settings from '@/pages/Settings';
 import Unsupported from '@/pages/Unsupported';
+import MobileUnsupported from '@/pages/MobileUnsupported';
 import Toast from '@/components/Toast';
-import { isSupported } from '@/lib/speech';
+import { isSupported, isMobile } from '@/lib/speech';
 
 export default function App() {
+  // Block mobile devices first - they don't support Web Speech API
+  if (isMobile()) {
+    return <MobileUnsupported />;
+  }
+
+  // Then check if Web Speech API is supported on desktop
   if (!isSupported()) {
     return <Unsupported />;
   }

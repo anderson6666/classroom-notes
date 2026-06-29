@@ -1,4 +1,4 @@
-import { AlertCircle, Chrome, Github } from 'lucide-react';
+import { AlertCircle, Chrome } from 'lucide-react';
 import Logo from '@/components/Logo';
 
 export default function Unsupported() {
@@ -16,18 +16,18 @@ export default function Unsupported() {
             </span>
             <div>
               <h1 className="font-display text-xl font-semibold text-ink">
-                当前浏览器不支持离线语音识别
+                当前浏览器不支持语音识别
               </h1>
               <p className="text-sm text-ink-soft">
-                课堂笔记依赖 WebAssembly 与麦克风 API，请使用支持 WebAssembly 的现代浏览器。
+                课堂笔记依赖 Web Speech API，请使用 Chrome 或 Edge 浏览器。
               </p>
             </div>
           </div>
 
           <div className="mb-6 rounded-lg border border-line/50 bg-paper-soft/50 px-4 py-3">
             <p className="text-xs leading-relaxed text-ink-soft">
-              识别基于 vosk-browser（WASM），完全离线运行，无需联网。
-              需要 HTTPS 环境与麦克风权限。GitHub Pages 已提供 HTTPS。
+              语音识别基于浏览器内置的 Web Speech API（在线服务），
+              需要 HTTPS 环境与麦克风权限。仅支持桌面端浏览器。
             </p>
           </div>
 
@@ -41,9 +41,8 @@ export default function Unsupported() {
             下载 Chrome 浏览器
           </a>
 
-          <p className="mt-4 flex items-center justify-center gap-1.5 font-mono text-[10px] text-ink-faint">
-            <Github size={11} />
-            可部署于 GitHub Pages · 纯前端 · 离线识别 · 无需密钥
+          <p className="mt-4 text-center font-mono text-[10px] text-ink-faint">
+            支持的浏览器：Chrome、Edge、Safari（macOS）
           </p>
         </div>
       </div>

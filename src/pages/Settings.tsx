@@ -272,24 +272,24 @@ export default function Settings() {
               <ShieldCheck size={14} className="mt-0.5 shrink-0 text-gold" />
               <span>
                 所有数据仅存于浏览器本地（localStorage / IndexedDB），不会上传任何服务器。
-                语音识别基于 vosk-browser（WASM 离线），大模型首次加载后完全离线运行，无需联网。
+                语音识别基于 Web Speech API（浏览器在线服务），需要联网。
               </span>
             </p>
             <p className="flex items-start gap-2">
               <Chrome size={14} className="mt-0.5 shrink-0 text-gold" />
               <span>
                 {isSupported() ? (
-                  <span className="text-gold">当前浏览器已支持离线识别</span>
+                  <span className="text-gold">当前浏览器已支持语音识别</span>
                 ) : (
-                  <span className="text-rust">当前浏览器不支持离线识别</span>
+                  <span className="text-rust">当前浏览器不支持语音识别</span>
                 )}
-                （vosk-browser · 大模型约 1.3–1.8GB）
+                （Web Speech API · 仅支持桌面端）
               </span>
             </p>
             <p className="flex items-start gap-2">
               <Github size={14} className="mt-0.5 shrink-0 text-gold" />
               <span>
-                纯前端项目，部署于 GitHub Pages。离线模式首次使用需下载大模型（1.3–1.8GB），后续自动缓存。
+                纯前端项目，部署于 GitHub Pages。仅支持桌面端浏览器（Chrome、Edge、Safari）。
               </span>
             </p>
           </div>
