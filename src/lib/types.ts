@@ -42,7 +42,7 @@ export interface SessionIndex {
   preview: string;
 }
 
-export type RecognitionState = 'idle' | 'listening' | 'paused';
+export type RecognitionState = 'idle' | 'loading' | 'listening' | 'error';
 
 export type SpeechErrorKind =
   | 'no-speech'
@@ -79,14 +79,6 @@ export interface LanguageOption {
 }
 
 export const LANGUAGES: LanguageOption[] = [
-  { value: 'zh-CN', label: '中文（简体）' },
-  { value: 'zh-TW', label: '中文（繁體）' },
-  { value: 'zh-HK', label: '粵語（香港）' },
-  { value: 'en-US', label: 'English (US)' },
-  { value: 'en-GB', label: 'English (UK)' },
-  { value: 'ja-JP', label: '日本語' },
-  { value: 'ko-KR', label: '한국어' },
-  { value: 'fr-FR', label: 'Français' },
-  { value: 'de-DE', label: 'Deutsch' },
-  { value: 'es-ES', label: 'Español' },
+  { value: 'zh-CN', label: '普通话' },
+  { value: 'en-US', label: 'English' },
 ];

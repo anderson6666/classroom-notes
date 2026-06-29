@@ -170,7 +170,11 @@ export const useStore = create<AppStore>((set, get) => {
         interimResults: settings.interimResults,
         maxAlternatives: settings.maxAlternatives,
       });
-      controller.onStateChange((state) => set({ recognitionState: state }));
+      controller.onStateChange((state) => {
+        set({ recognitionState: state });
+        if (state === 'listening') startTick();
+        else if (state === 'idle' || state === 'error') stopTick();
+      });
       controller.onError((err) => set({ lastError: err }));
       controller.onSegment((seg) => {
         const { currentSession } = get();
@@ -241,8 +245,11 @@ export const useStore = create<AppStore>((set, get) => {
       clearInterval(tickTimer);
       tickTimer = null;
     }
-    accumulatedMs += Date.now() - sessionStartEpoch;
-    set({ elapsedMs: accumulatedMs });
+    if (sessionStartEpoch > 0) {
+      accumulatedMs += Date.now() - sessionStartEpoch;
+      sessionStartEpoch = 0;
+      set({ elapsedMs: accumulatedMs });
+    }
   }
 
   function maybeAutoSummary(): void {
@@ -372,7 +379,8 @@ export const useStore = create<AppStore>((set, get) => {
     },
 
     closeSession() {
-      if (get().recognitionState === 'listening') get().stopListening();
+      const st = get().recognitionState;
+      if (st === 'listening' || st === 'loading') get().stopListening();
       summaryAbort?.abort();
       correctAbort?.abort();
       set({
@@ -406,7 +414,6 @@ export const useStore = create<AppStore>((set, get) => {
         accumulatedMs = session.durationMs;
       }
       controller!.start();
-      startTick();
       if (settings.enableSpeakerId && isSpeakerSupported()) {
         try {
           await ensureSpeaker().start();
@@ -434,7 +441,8 @@ export const useStore = create<AppStore>((set, get) => {
     },
 
     toggleListening() {
-      if (get().recognitionState === 'listening') get().stopListening();
+      const st = get().recognitionState;
+      if (st === 'listening' || st === 'loading') get().stopListening();
       else void get().startListening();
     },
 
@@ -520,7 +528,8 @@ export const useStore = create<AppStore>((set, get) => {
     },
 
     async clearAllData() {
-      if (get().recognitionState === 'listening') get().stopListening();
+      const st = get().recognitionState;
+      if (st === 'listening' || st === 'loading') get().stopListening();
       await storage.clearAllSessions();
       set({
         sessions: [],

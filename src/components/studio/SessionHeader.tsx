@@ -32,6 +32,7 @@ export default function SessionHeader() {
   if (!session) return null;
 
   const isListening = state === 'listening';
+  const isLoading = state === 'loading';
   const commitTitle = () => {
     const v = title.trim();
     if (v && v !== session.title) updateMeta({ title: v });
@@ -94,16 +95,22 @@ export default function SessionHeader() {
               'mr-1 flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider',
               isListening
                 ? 'bg-rust/15 text-rust'
-                : 'bg-paper-soft text-ink-faint',
+                : isLoading
+                  ? 'bg-gold/15 text-gold'
+                  : 'bg-paper-soft text-ink-faint',
             )}
           >
             <span
               className={cn(
                 'h-1.5 w-1.5 rounded-full',
-                isListening ? 'bg-rust animate-pulse' : 'bg-ink-faint',
+                isListening
+                  ? 'bg-rust animate-pulse'
+                  : isLoading
+                    ? 'bg-gold animate-pulse'
+                    : 'bg-ink-faint',
               )}
             />
-            {saving ? '保存中' : isListening ? '录音中' : '待机'}
+            {saving ? '保存中' : isListening ? '录音中' : isLoading ? '加载中' : '待机'}
           </span>
           <ExportButton session={session} />
         </div>

@@ -272,17 +272,17 @@ export default function Settings() {
               <ShieldCheck size={14} className="mt-0.5 shrink-0 text-gold" />
               <span>
                 所有数据仅存于浏览器本地（localStorage / IndexedDB），不会上传任何服务器。
-                实时识别由浏览器厂商在线服务提供（Chrome/Edge 使用 Google 服务）。
+                语音识别基于 vosk-browser（WASM），模型首次加载后完全离线运行，无需联网。
               </span>
             </p>
             <p className="flex items-start gap-2">
               <Chrome size={14} className="mt-0.5 shrink-0 text-gold" />
               <span>
-                推荐桌面端 Chrome / Edge 以获得最佳体验。当前浏览器
+                需要支持 WebAssembly 的现代浏览器。当前浏览器
                 {isSupported() ? (
-                  <span className="text-gold"> 已支持语音识别</span>
+                  <span className="text-gold"> 已支持离线识别</span>
                 ) : (
-                  <span className="text-rust"> 不支持语音识别</span>
+                  <span className="text-rust"> 不支持离线识别</span>
                 )}
                 。
               </span>
@@ -290,7 +290,7 @@ export default function Settings() {
             <p className="flex items-start gap-2">
               <Github size={14} className="mt-0.5 shrink-0 text-gold" />
               <span>
-                纯前端项目，可一键部署于 GitHub Pages。HTTPS 由其自带，满足 Web Speech API 安全上下文要求。
+                纯前端项目，可一键部署于 GitHub Pages。首次使用需下载识别模型（约 40MB），后续自动缓存。
               </span>
             </p>
           </div>

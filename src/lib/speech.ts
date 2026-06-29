@@ -1,86 +1,43 @@
 import type {
   RecognitionState,
   SpeechError,
-  SpeechErrorKind,
   SpeechSegment,
 } from './types';
 
-// Minimal Web Speech API type declarations (not in lib.dom by default)
-interface SpeechRecognitionAlternative {
-  transcript: string;
-  confidence: number;
-}
-interface SpeechRecognitionResult {
-  readonly length: number;
-  readonly isFinal: boolean;
-  item(index: number): SpeechRecognitionAlternative;
-  [index: number]: SpeechRecognitionAlternative;
-}
-interface SpeechRecognitionResultList {
-  readonly length: number;
-  item(index: number): SpeechRecognitionResult;
-  [index: number]: SpeechRecognitionResult;
-}
-interface SpeechRecognitionEvent extends Event {
-  readonly resultIndex: number;
-  readonly results: SpeechRecognitionResultList;
-}
-interface SpeechRecognitionErrorEvent extends Event {
-  readonly error: string;
-  readonly message: string;
-}
-interface SpeechRecognition extends EventTarget {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  maxAlternatives: number;
-  start(): void;
-  stop(): void;
-  abort(): void;
-  onresult: ((e: SpeechRecognitionEvent) => void) | null;
-  onerror: ((e: SpeechRecognitionErrorEvent) => void) | null;
-  onend: (() => void) | null;
-  onstart: (() => void) | null;
-}
-type SpeechRecognitionCtor = new () => SpeechRecognition;
+const MODEL_URLS: Record<string, string> = {
+  'zh-CN': 'https://raw.githubusercontent.com/ccoreilly/vosk-browser/gh-pages/models/vosk-model-small-cn-0.3.tar.gz',
+  'en-US': 'https://raw.githubusercontent.com/ccoreilly/vosk-browser/gh-pages/models/vosk-model-small-en-us-0.15.tar.gz',
+};
 
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionCtor;
-    webkitSpeechRecognition?: SpeechRecognitionCtor;
-  }
+interface VoskModel {
+  KaldiRecognizer: new (sampleRate: number, grammar?: string) => VoskRecognizer;
+  terminate: () => void;
+  ready: boolean;
+  on: (event: string, listener: (message: unknown) => void) => void;
+  setLogLevel: (level: number) => void;
 }
+
+interface VoskRecognizer {
+  on: (event: string, listener: (message: unknown) => void) => void;
+  setWords: (words: boolean) => void;
+  acceptWaveform: (buffer: AudioBuffer) => void;
+  remove: () => void;
+}
+
+interface VoskModule {
+  createModel: (modelUrl: string, logLevel?: number) => Promise<VoskModel>;
+}
+
+let cachedModel: VoskModel | null = null;
+let cachedModelLang = '';
+let voskModule: VoskModule | null = null;
 
 export function isSupported(): boolean {
   if (typeof window === 'undefined') return false;
-  return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
-}
-
-function getCtor(): SpeechRecognitionCtor | null {
-  if (typeof window === 'undefined') return null;
-  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
-}
-
-function mapError(code: string): SpeechError {
-  const map: Record<string, SpeechErrorKind> = {
-    'no-speech': 'no-speech',
-    'audio-capture': 'audio-capture',
-    'not-allowed': 'not-allowed',
-    'service-not-allowed': 'service-not-allowed',
-    'network': 'network',
-    'aborted': 'aborted',
-  };
-  const kind = map[code] || 'unknown';
-  const messages: Record<SpeechErrorKind, string> = {
-    'no-speech': '未检测到语音，请稍后再试。',
-    'audio-capture': '麦克风不可用，请检查设备。',
-    'not-allowed': '麦克风权限被拒绝，请在浏览器设置中允许。',
-    'service-not-allowed': '识别服务不可用，请更换浏览器（推荐 Chrome）。',
-    'network': '网络异常，识别服务无法连接。',
-    'aborted': '识别已中止。',
-    'unknown': '发生未知错误。',
-  };
-  return { kind, message: messages[kind] };
+  return (
+    typeof WebAssembly !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia
+  );
 }
 
 export interface SpeechController {
@@ -108,12 +65,16 @@ function nextId(): string {
 }
 
 export function createSpeechController(initial: SpeechConfig): SpeechController {
-  const Ctor = getCtor();
-  let recognition: SpeechRecognition | null = null;
   let config: SpeechConfig = { ...initial };
   let userIntent: RecognitionState = 'idle';
   let startTimestamp = 0;
-  let lastFinalTimestamp = 0;
+
+  let recognizer: VoskRecognizer | null = null;
+  let audioContext: AudioContext | null = null;
+  let mediaStream: MediaStream | null = null;
+  let sourceNode: MediaStreamAudioSourceNode | null = null;
+  let processorNode: ScriptProcessorNode | null = null;
+  let loadingAborted = false;
 
   const segmentCb = new Set<(seg: SpeechSegment) => void>();
   const stateCb = new Set<(s: RecognitionState) => void>();
@@ -123,127 +84,163 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
   const emitError = (e: SpeechError) => errorCb.forEach((cb) => cb(e));
   const emitSegment = (seg: SpeechSegment) => segmentCb.forEach((cb) => cb(seg));
 
-  const build = (): SpeechRecognition | null => {
-    if (!Ctor) return null;
-    const rec = new Ctor();
-    rec.lang = config.lang;
-    rec.continuous = config.continuous;
-    rec.interimResults = config.interimResults;
-    rec.maxAlternatives = config.maxAlternatives;
+  async function ensureModel(lang: string): Promise<VoskModel> {
+    if (cachedModel && cachedModelLang === lang) return cachedModel;
+    if (cachedModel) {
+      cachedModel.terminate();
+      cachedModel = null;
+    }
+    if (!voskModule) {
+      voskModule = await import('vosk-browser');
+    }
+    const url = MODEL_URLS[lang] || MODEL_URLS['zh-CN'];
+    const model = await voskModule.createModel(url, -1);
+    cachedModel = model;
+    cachedModelLang = lang;
+    return model;
+  }
 
-    rec.onstart = () => {
-      if (startTimestamp === 0) startTimestamp = Date.now();
-      emitState('listening');
-    };
+  async function startInternal(): Promise<void> {
+    if (loadingAborted) return;
+    try {
+      const model = await ensureModel(config.lang);
+      if (loadingAborted) return;
 
-    rec.onresult = (event: SpeechRecognitionEvent) => {
-      const resultIndex = event.resultIndex;
-      const results = event.results;
-      for (let i = resultIndex; i < results.length; i++) {
-        const result = results[i];
-        const alt = result.item(0) || result[0];
-        if (!alt) continue;
-        const text = alt.transcript;
-        const confidence = alt.confidence;
-        let ts = Date.now() - startTimestamp;
-        if (result.isFinal) {
-          lastFinalTimestamp = ts;
-        } else if (lastFinalTimestamp > 0) {
-          ts = lastFinalTimestamp + (ts - lastFinalTimestamp);
-        }
+      const sampleRate = 16000;
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      if (loadingAborted) return;
+
+      audioContext = new AudioContext({ sampleRate });
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
+      recognizer = new model.KaldiRecognizer(audioContext.sampleRate);
+      recognizer.setWords(false);
+
+      recognizer.on('result', (message: unknown) => {
+        const msg = message as { result: { text: string } };
+        const text = msg.result.text;
+        if (!text) return;
+        const ts = Date.now() - startTimestamp;
         emitSegment({
           id: nextId(),
           text,
           timestamp: ts,
-          isFinal: result.isFinal,
-          confidence,
+          isFinal: true,
+          confidence: 1,
         });
-      }
-    };
+      });
 
-    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      if (e.error === 'aborted' || e.error === 'no-speech') {
-        // no-speech in continuous mode is normal; we restart in onend
-        if (e.error === 'no-speech') return;
-      }
-      emitError(mapError(e.error));
-    };
+      recognizer.on('partialresult', (message: unknown) => {
+        if (!config.interimResults) return;
+        const msg = message as { result: { partial: string } };
+        const partial = msg.result.partial;
+        if (!partial) return;
+        emitSegment({
+          id: nextId(),
+          text: partial,
+          timestamp: Date.now() - startTimestamp,
+          isFinal: false,
+          confidence: 0,
+        });
+      });
 
-    rec.onend = () => {
-      // Chrome auto-stops after silence. If user still wants to listen, restart.
-      if (userIntent === 'listening') {
+      sourceNode = audioContext.createMediaStreamSource(mediaStream);
+      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+      processorNode.onaudioprocess = (event: AudioProcessingEvent) => {
+        if (!recognizer || userIntent !== 'listening') return;
         try {
-          rec.start();
+          recognizer.acceptWaveform(event.inputBuffer);
         } catch {
-          // restart may throw if called too quickly; defer
-          setTimeout(() => {
-            if (userIntent === 'listening') {
-              try {
-                rec.start();
-              } catch {
-                /* ignore */
-              }
-            }
-          }, 250);
+          /* ignore waveform errors */
         }
-      } else {
-        emitState('idle');
-      }
-    };
+      };
 
-    return rec;
-  };
+      sourceNode.connect(processorNode);
+      processorNode.connect(audioContext.destination);
+
+      startTimestamp = Date.now();
+      userIntent = 'listening';
+      emitState('listening');
+    } catch (e) {
+      if (loadingAborted) return;
+      userIntent = 'error';
+      const isMicError =
+        e instanceof DOMException &&
+        (e.name === 'NotAllowedError' || e.name === 'NotFoundError');
+      emitError({
+        kind: isMicError ? 'not-allowed' : 'unknown',
+        message: isMicError
+          ? '麦克风权限被拒绝，请在浏览器设置中允许。'
+          : e instanceof Error
+            ? `语音识别启动失败：${e.message}`
+            : '语音识别启动失败。',
+      });
+      emitState('error');
+      cleanupAudio();
+    }
+  }
+
+  function cleanupAudio(): void {
+    if (processorNode) {
+      try { processorNode.disconnect(); } catch { /* */ }
+      processorNode.onaudioprocess = null;
+      processorNode = null;
+    }
+    if (sourceNode) {
+      try { sourceNode.disconnect(); } catch { /* */ }
+      sourceNode = null;
+    }
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null;
+    }
+    if (audioContext) {
+      try { void audioContext.close(); } catch { /* */ }
+      audioContext = null;
+    }
+    if (recognizer) {
+      try { recognizer.remove(); } catch { /* */ }
+      recognizer = null;
+    }
+  }
 
   return {
     start() {
-      if (!Ctor) {
-        emitError({
-          kind: 'service-not-allowed',
-          message: '当前浏览器不支持语音识别，请使用 Chrome 或 Edge。',
-        });
-        return;
-      }
-      if (userIntent === 'listening') return;
-      userIntent = 'listening';
-      if (startTimestamp === 0) startTimestamp = Date.now();
-      if (!recognition) recognition = build();
-      if (!recognition) return;
-      try {
-        recognition.start();
-      } catch {
-        // already started; ignore
-      }
+      if (userIntent === 'listening' || userIntent === 'loading') return;
+      userIntent = 'loading';
+      loadingAborted = false;
+      emitState('loading');
+      void startInternal();
     },
     stop() {
+      loadingAborted = true;
       userIntent = 'idle';
-      if (recognition) {
-        try {
-          recognition.stop();
-        } catch {
-          /* ignore */
-        }
-      }
+      cleanupAudio();
       emitState('idle');
     },
     abort() {
+      loadingAborted = true;
       userIntent = 'idle';
-      if (recognition) {
-        try {
-          recognition.abort();
-        } catch {
-          /* ignore */
-        }
-      }
+      cleanupAudio();
       emitState('idle');
     },
     updateConfig(next) {
+      const langChanged = next.lang !== undefined && next.lang !== config.lang;
       config = { ...config, ...next };
-      // Apply lang on next rebuild; live recognition needs restart to pick up
-      if (recognition) {
-        recognition.lang = config.lang;
-        recognition.continuous = config.continuous;
-        recognition.interimResults = config.interimResults;
-        recognition.maxAlternatives = config.maxAlternatives;
+      if (langChanged && cachedModel) {
+        cachedModel.terminate();
+        cachedModel = null;
+        cachedModelLang = '';
       }
     },
     onSegment(cb) {
@@ -256,21 +253,16 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
       errorCb.add(cb);
     },
     destroy() {
+      loadingAborted = true;
       userIntent = 'idle';
+      cleanupAudio();
       segmentCb.clear();
       stateCb.clear();
       errorCb.clear();
-      if (recognition) {
-        try {
-          recognition.abort();
-        } catch {
-          /* ignore */
-        }
-        recognition.onresult = null;
-        recognition.onerror = null;
-        recognition.onend = null;
-        recognition.onstart = null;
-        recognition = null;
+      if (cachedModel) {
+        cachedModel.terminate();
+        cachedModel = null;
+        cachedModelLang = '';
       }
     },
   };

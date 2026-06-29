@@ -13,6 +13,7 @@ export default function ControlBar() {
   const hasSession = useStore((s) => Boolean(s.currentSession));
 
   const isListening = state === 'listening';
+  const isLoading = state === 'loading';
 
   return (
     <div className="sticky top-0 z-10 border-b border-line/60 bg-paper/80 px-5 py-3 backdrop-blur-md md:px-8">
@@ -69,7 +70,7 @@ export default function ControlBar() {
                 clearSegments();
               }
             }}
-            disabled={!hasSession || isListening}
+            disabled={!hasSession || isListening || isLoading}
             className="flex items-center gap-1.5 rounded-lg border border-line/60 bg-paper-card px-2.5 py-1.5 text-xs text-ink-soft transition hover:border-rust/50 hover:text-rust disabled:cursor-not-allowed disabled:opacity-40"
             title="清空所有段落"
           >
@@ -79,7 +80,11 @@ export default function ControlBar() {
         </div>
       </div>
       <p className="mt-1.5 text-center font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-        {isListening ? '正在聆听 · 实时转写' : '按下金色按钮开始'}
+        {isListening
+          ? '正在聆听 · 实时转写'
+          : isLoading
+            ? '加载识别模型中…'
+            : '按下金色按钮开始'}
       </p>
     </div>
   );
