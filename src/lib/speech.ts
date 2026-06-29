@@ -4,8 +4,13 @@ import type {
   SpeechSegment,
 } from './types';
 
+function localModelUrl(filename: string): string {
+  const base = new URL(import.meta.env.BASE_URL, window.location.href).href;
+  return `${base}models/${filename}`;
+}
+
 const MODEL_URLS: Record<string, string> = {
-  'zh-CN': 'https://raw.githubusercontent.com/ccoreilly/vosk-browser/gh-pages/models/vosk-model-small-cn-0.3.tar.gz',
+  'zh-CN': localModelUrl('vosk-model-small-cn-0.22.tar.gz'),
   'en-US': 'https://raw.githubusercontent.com/ccoreilly/vosk-browser/gh-pages/models/vosk-model-small-en-us-0.15.tar.gz',
 };
 
@@ -74,6 +79,7 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
   let mediaStream: MediaStream | null = null;
   let sourceNode: MediaStreamAudioSourceNode | null = null;
   let processorNode: ScriptProcessorNode | null = null;
+  let muteGain: GainNode | null = null;
   let loadingAborted = false;
 
   const segmentCb = new Set<(seg: SpeechSegment) => void>();
@@ -106,18 +112,17 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
       const model = await ensureModel(config.lang);
       if (loadingAborted) return;
 
-      const sampleRate = 16000;
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate,
           echoCancellation: true,
-          noiseSuppression: true,
+          noiseSuppression: false,
+          autoGainControl: false,
         },
       });
       if (loadingAborted) return;
 
-      audioContext = new AudioContext({ sampleRate });
+      audioContext = new AudioContext();
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
       }
@@ -155,6 +160,8 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
 
       sourceNode = audioContext.createMediaStreamSource(mediaStream);
       processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+      muteGain = audioContext.createGain();
+      muteGain.gain.value = 0;
 
       processorNode.onaudioprocess = (event: AudioProcessingEvent) => {
         if (!recognizer || userIntent !== 'listening') return;
@@ -166,7 +173,8 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
       };
 
       sourceNode.connect(processorNode);
-      processorNode.connect(audioContext.destination);
+      processorNode.connect(muteGain);
+      muteGain.connect(audioContext.destination);
 
       startTimestamp = Date.now();
       userIntent = 'listening';
@@ -195,6 +203,10 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
       try { processorNode.disconnect(); } catch { /* */ }
       processorNode.onaudioprocess = null;
       processorNode = null;
+    }
+    if (muteGain) {
+      try { muteGain.disconnect(); } catch { /* */ }
+      muteGain = null;
     }
     if (sourceNode) {
       try { sourceNode.disconnect(); } catch { /* */ }
