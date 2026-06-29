@@ -317,13 +317,47 @@ function createVoskController(initial: SpeechConfig): SpeechController {
       } else {
         fetchAbort = new AbortController();
 
+        // Fetch with retry: exponential backoff for transient failures
+        // (400/500/网络抖动). AbortError is never retried — it means the user
+        // explicitly stopped loading.
+        const fetchWithRetry = async (
+          url: string,
+          maxRetries = 3,
+        ): Promise<Response> => {
+          let lastError: Error | null = null;
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            if (loadingAborted) {
+              throw new DOMException('Aborted', 'AbortError');
+            }
+            try {
+              const resp = await fetch(url, { signal: fetchAbort.signal });
+              if (resp.ok) return resp;
+              // 4xx (except 429 rate-limit) are permanent — don't retry.
+              if (
+                resp.status >= 400 &&
+                resp.status < 500 &&
+                resp.status !== 429
+              ) {
+                throw new Error(`HTTP ${resp.status}`);
+              }
+              lastError = new Error(`HTTP ${resp.status}`);
+            } catch (e) {
+              if (e instanceof DOMException && e.name === 'AbortError') {
+                throw e;
+              }
+              lastError = e instanceof Error ? e : new Error(String(e));
+            }
+            if (attempt < maxRetries) {
+              await new Promise((r) =>
+                setTimeout(r, 1000 * Math.pow(2, attempt)),
+              );
+            }
+          }
+          throw lastError || new Error('Fetch failed after retries');
+        };
+
         // Fetch manifest describing chunk layout for this language.
-        const manifestResp = await fetch(MANIFEST_URL, {
-          signal: fetchAbort.signal,
-        });
-        if (!manifestResp.ok) {
-          throw new Error(`Manifest HTTP ${manifestResp.status}`);
-        }
+        const manifestResp = await fetchWithRetry(MANIFEST_URL);
         const manifest: ModelManifest = await manifestResp.json();
         const entry = manifest[lang] || manifest['zh-CN'];
         if (!entry || !entry.chunks.length) {
@@ -345,10 +379,7 @@ function createVoskController(initial: SpeechConfig): SpeechController {
             }
             const idx = nextIndex++;
             const chunkUrl = `${MODEL_BASE}/${chunks[idx]}`;
-            const resp = await fetch(chunkUrl, { signal: fetchAbort.signal });
-            if (!resp.ok) {
-              throw new Error(`Chunk ${idx} HTTP ${resp.status}`);
-            }
+            const resp = await fetchWithRetry(chunkUrl);
             const buf = new Uint8Array(await resp.arrayBuffer());
             results[idx] = buf;
             received += buf.length;
