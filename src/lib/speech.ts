@@ -306,7 +306,7 @@ function createVoskController(initial: SpeechConfig): SpeechController {
       voskModule = await import('vosk-browser');
     }
 
-    const cacheKey = `${MANIFEST_URL}#${lang}#v${CACHE_VERSION}`;
+    const cacheKey = `https://vosk-models.cache/${lang}/v${CACHE_VERSION}`;
     let blobUrl: string;
     try {
       const cache = await caches.open('vosk-models');
