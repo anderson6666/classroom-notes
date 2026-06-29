@@ -1,0 +1,46 @@
+{
+  "zh-CN": {
+    "totalSize": 1255155876,
+    "chunks": [
+      "zh-CN/chunk_00",
+      "zh-CN/chunk_01",
+      "zh-CN/chunk_02",
+      "zh-CN/chunk_03",
+      "zh-CN/chunk_04",
+      "zh-CN/chunk_05",
+      "zh-CN/chunk_06",
+      "zh-CN/chunk_07",
+      "zh-CN/chunk_08",
+      "zh-CN/chunk_09",
+      "zh-CN/chunk_10",
+      "zh-CN/chunk_11",
+      "zh-CN/chunk_12",
+      "zh-CN/chunk_13"
+    ]
+  },
+  "en-US": {
+    "totalSize": 1736386169,
+    "chunks": [
+      "en-US/chunk_00",
+      "en-US/chunk_01",
+      "en-US/chunk_02",
+      "en-US/chunk_03",
+      "en-US/chunk_04",
+      "en-US/chunk_05",
+      "en-US/chunk_06",
+      "en-US/chunk_07",
+      "en-US/chunk_08",
+      "en-US/chunk_09",
+      "en-US/chunk_10",
+      "en-US/chunk_11",
+      "en-US/chunk_12",
+      "en-US/chunk_13",
+      "en-US/chunk_14",
+      "en-US/chunk_15",
+      "en-US/chunk_16",
+      "en-US/chunk_17",
+      "en-US/chunk_18",
+      "en-US/chunk_19"
+    ]
+  }
+}
