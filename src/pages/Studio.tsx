@@ -7,6 +7,7 @@ import TranscriptStream from '@/components/studio/TranscriptStream';
 import StudioFooter from '@/components/studio/StudioFooter';
 import StudioWelcome from '@/components/studio/StudioWelcome';
 import SummaryPanel from '@/components/studio/SummaryPanel';
+import ModelLoadingOverlay from '@/components/studio/ModelLoadingOverlay';
 import { useStore } from '@/lib/store';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 
@@ -39,6 +40,7 @@ export default function Studio() {
         <SummaryPanel mobileOpen={summaryOpen} onClose={() => setSummaryOpen(false)} />
       </div>
       <StudioFooter />
+      <ModelLoadingOverlay />
       <button
         onClick={() => setSummaryOpen(true)}
         className="fixed bottom-24 right-4 z-30 flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-scholar to-scholar-deep text-paper shadow-glow transition hover:scale-105 lg:hidden"

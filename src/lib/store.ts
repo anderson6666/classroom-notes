@@ -100,6 +100,7 @@ interface AppStore {
   sessions: SessionIndex[];
   currentSession: Session | null;
   recognitionState: RecognitionState;
+  modelProgress: number;
   interimText: string;
   lastError: SpeechError | null;
   elapsedMs: number;
@@ -174,7 +175,11 @@ export const useStore = create<AppStore>((set, get) => {
         set({ recognitionState: state });
         if (state === 'listening') startTick();
         else if (state === 'idle' || state === 'error') stopTick();
+        if (state === 'idle' || state === 'error' || state === 'listening') {
+          set({ modelProgress: 0 });
+        }
       });
+      controller.onProgress((progress) => set({ modelProgress: progress }));
       controller.onError((err) => set({ lastError: err }));
       controller.onSegment((seg) => {
         const { currentSession } = get();
@@ -308,6 +313,7 @@ export const useStore = create<AppStore>((set, get) => {
     sessions: [],
     currentSession: null,
     recognitionState: 'idle',
+    modelProgress: 0,
     interimText: '',
     lastError: null,
     elapsedMs: 0,

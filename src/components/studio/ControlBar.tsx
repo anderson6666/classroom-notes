@@ -14,6 +14,7 @@ export default function ControlBar() {
 
   const isListening = state === 'listening';
   const isLoading = state === 'loading';
+  const progress = useStore((s) => s.modelProgress);
 
   return (
     <div className="sticky top-0 z-10 border-b border-line/60 bg-paper/80 px-5 py-3 backdrop-blur-md md:px-8">
@@ -83,7 +84,9 @@ export default function ControlBar() {
         {isListening
           ? '正在聆听 · 实时转写'
           : isLoading
-            ? '加载识别模型中…'
+            ? progress > 0
+              ? `下载模型 ${progress}%`
+              : '加载识别模型中…'
             : '按下金色按钮开始'}
       </p>
     </div>

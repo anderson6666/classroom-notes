@@ -53,6 +53,7 @@ export interface SpeechController {
   onSegment: (cb: (seg: SpeechSegment) => void) => void;
   onStateChange: (cb: (state: RecognitionState) => void) => void;
   onError: (cb: (err: SpeechError) => void) => void;
+  onProgress: (cb: (progress: number) => void) => void;
   destroy: () => void;
 }
 
@@ -85,10 +86,14 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
   const segmentCb = new Set<(seg: SpeechSegment) => void>();
   const stateCb = new Set<(s: RecognitionState) => void>();
   const errorCb = new Set<(e: SpeechError) => void>();
+  const progressCb = new Set<(p: number) => void>();
 
   const emitState = (s: RecognitionState) => stateCb.forEach((cb) => cb(s));
   const emitError = (e: SpeechError) => errorCb.forEach((cb) => cb(e));
   const emitSegment = (seg: SpeechSegment) => segmentCb.forEach((cb) => cb(seg));
+  const emitProgress = (p: number) => progressCb.forEach((cb) => cb(p));
+
+  let fetchAbort: AbortController | null = null;
 
   async function ensureModel(lang: string): Promise<VoskModel> {
     if (cachedModel && cachedModelLang === lang) return cachedModel;
@@ -100,7 +105,48 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
       voskModule = await import('vosk-browser');
     }
     const url = MODEL_URLS[lang] || MODEL_URLS['zh-CN'];
-    const model = await voskModule.createModel(url, -1);
+
+    let blobUrl: string;
+    try {
+      const cache = await caches.open('vosk-models');
+      const cached = await cache.match(url);
+      if (cached) {
+        const blob = await cached.blob();
+        blobUrl = URL.createObjectURL(blob);
+      } else {
+        fetchAbort = new AbortController();
+        const response = await fetch(url, { signal: fetchAbort.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const contentLength = response.headers.get('Content-Length');
+        const total = contentLength ? parseInt(contentLength) : 0;
+        const reader = response.body!.getReader();
+        const chunks: Uint8Array[] = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (loadingAborted) {
+            fetchAbort.abort();
+            throw new DOMException('Aborted', 'AbortError');
+          }
+          chunks.push(value);
+          received += value.length;
+          if (total > 0) {
+            emitProgress(Math.min(99, Math.round((received / total) * 100)));
+          }
+        }
+        const blob = new Blob(chunks as BlobPart[]);
+        await cache.put(url, new Response(blob));
+        blobUrl = URL.createObjectURL(blob);
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') throw e;
+      blobUrl = url;
+    }
+    fetchAbort = null;
+
+    emitProgress(100);
+    const model = await voskModule.createModel(blobUrl, -1);
     cachedModel = model;
     cachedModelLang = lang;
     return model;
@@ -236,12 +282,14 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
     },
     stop() {
       loadingAborted = true;
+      if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
       userIntent = 'idle';
       cleanupAudio();
       emitState('idle');
     },
     abort() {
       loadingAborted = true;
+      if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
       userIntent = 'idle';
       cleanupAudio();
       emitState('idle');
@@ -264,13 +312,18 @@ export function createSpeechController(initial: SpeechConfig): SpeechController 
     onError(cb) {
       errorCb.add(cb);
     },
+    onProgress(cb) {
+      progressCb.add(cb);
+    },
     destroy() {
       loadingAborted = true;
+      if (fetchAbort) { try { fetchAbort.abort(); } catch { /* */ } }
       userIntent = 'idle';
       cleanupAudio();
       segmentCb.clear();
       stateCb.clear();
       errorCb.clear();
+      progressCb.clear();
       if (cachedModel) {
         cachedModel.terminate();
         cachedModel = null;
