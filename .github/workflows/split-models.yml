@@ -13,7 +13,7 @@ permissions:
 jobs:
   split:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,8 +36,7 @@ jobs:
           mkdir -p chunks/zh-CN chunks/en-US
 
           # Split each tar.gz into raw chunks. `split -d` produces chunk_00,
-          # chunk_01, ... which sorts naturally and avoids octal-number issues
-          # that arise when zero-padding numeric suffixes with printf.
+          # chunk_01, ... which sorts naturally and avoids octal-number issues.
           if [ -f workdir/vosk-model-cn-0.22.tar.gz ]; then
             echo "Splitting Chinese model..."
             split -b "$CHUNK_SIZE" -d workdir/vosk-model-cn-0.22.tar.gz chunks/zh-CN/chunk_
@@ -80,22 +79,54 @@ jobs:
           echo "=== Total chunk size ==="
           du -sh chunks
 
-      - name: Push to model-assets branch
+      - name: Push to model-assets branch (batched)
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd chunks
           git init
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Increase HTTP buffer and disable low-speed timeout for large pushes.
+          git config http.postBuffer 524288000
+          git config http.lowSpeedLimit 0
+          git config http.lowSpeedTime 999999
           git checkout --orphan model-assets
-          git add -A
-          CHUNK_COUNT=$(find . -name 'chunk_*' | wc -l)
-          TOTAL_SIZE=$(du -sh . | cut -f1)
-          git commit -m "chore: split models into chunks for CORS-friendly serving
-
-          Source: release 'models-large'
-          Chunks: ${CHUNK_COUNT} files
-          Total size: ${TOTAL_SIZE}"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
-          git push -f origin model-assets
+
+          # Retry helper: push up to 3 times with 10s backoff.
+          push_retry() {
+            local ref="$1"
+            for attempt in 1 2 3; do
+              echo "Push attempt $attempt for $ref..."
+              if git push -f origin "$ref"; then
+                echo "Push succeeded for $ref"
+                return 0
+              fi
+              echo "Push failed (attempt $attempt), retrying in 10s..."
+              sleep 10
+            done
+            echo "ERROR: All push attempts failed for $ref"
+            return 1
+          }
+
+          # Batch 1: manifest only (tiny, establishes the branch).
+          git add manifest.json
+          git commit -q -m "chore: add manifest.json"
+          push_retry model-assets || exit 1
+
+          # Batch 2: zh-CN chunks (~1.3GB).
+          if [ -d zh-CN ]; then
+            git add zh-CN/
+            git commit -q -m "chore: add zh-CN model chunks"
+            push_retry model-assets || exit 1
+          fi
+
+          # Batch 3: en-US chunks (~1.8GB).
+          if [ -d en-US ]; then
+            git add en-US/
+            git commit -q -m "chore: add en-US model chunks"
+            push_retry model-assets || exit 1
+          fi
+
           echo "=== Pushed model-assets branch ==="
+          git log --oneline
